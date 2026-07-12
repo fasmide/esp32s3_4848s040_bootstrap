@@ -17,6 +17,8 @@
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_st7701.h"
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_gt911.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 
@@ -44,16 +46,10 @@
 #define TOUCH_PIN_SDA       19
 #define TOUCH_PIN_SCL       45
 #define TOUCH_I2C_SPEED_HZ  100000
-#define TOUCH_I2C_TIMEOUT_MS 50
 #define TOUCH_POLL_MS       10
 #define TOUCH_BOX_HALF      30
 
-#define GT911_ADDR            0x5D
-#define GT911_REG_PRODUCT_ID  0x8140
-#define GT911_REG_CFG_VERSION 0x8047
-#define GT911_REG_POINT_INFO  0x814E
-#define GT911_REG_POINT_1     0x814F
-#define GT911_MAX_CONTACTS    5
+#define GT911_MAX_CONTACTS  CONFIG_ESP_LCD_TOUCH_MAX_POINTS
 
 #define LCD_PCLK_HZ       (12 * 1000 * 1000)
 #define LCD_BOUNCE_LINES  10
@@ -281,70 +277,24 @@ static const uint16_t s_touch_colors[GT911_MAX_CONTACTS] = {
 };
 
 /* ================================================================
- * GT911 touch driver (I²C)
+ * GT911 touch driver (esp_lcd_touch)
  * ================================================================ */
-
-static esp_err_t gt911_read(i2c_master_dev_handle_t dev, uint16_t reg,
-                            uint8_t *data, size_t len)
-{
-    uint8_t rb[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF)};
-    return i2c_master_transmit_receive(dev, rb, sizeof(rb), data, len,
-                                       TOUCH_I2C_TIMEOUT_MS);
-}
-
-static esp_err_t gt911_write8(i2c_master_dev_handle_t dev, uint16_t reg,
-                              uint8_t val)
-{
-    uint8_t buf[3] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF), val};
-    return i2c_master_transmit(dev, buf, sizeof(buf),
-                               TOUCH_I2C_TIMEOUT_MS);
-}
-
-static bool gt911_probe(i2c_master_dev_handle_t dev)
-{
-    uint8_t pid[3] = {0}, cfg = 0;
-    if (gt911_read(dev, GT911_REG_PRODUCT_ID, pid, sizeof(pid)) != ESP_OK) return false;
-    if (gt911_read(dev, GT911_REG_CFG_VERSION, &cfg, 1) != ESP_OK)       return false;
-
-    for (size_t i = 0; i < sizeof(pid); i++) {
-        if (pid[i] != 0 && (pid[i] < '0' || pid[i] > '9')) return false;
-    }
-    if (pid[0] == 0 && pid[1] == 0 && pid[2] == 0) return false;
-
-    ESP_LOGI(TAG, "GT911 prod=%c%c%c cfg=%u", pid[0], pid[1], pid[2], cfg);
-    return true;
-}
 
 static void touch_task(void *arg)
 {
-    i2c_master_dev_handle_t dev = (i2c_master_dev_handle_t)arg;
+    esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)arg;
     while (1) {
-        uint8_t info = 0;
-        if (gt911_read(dev, GT911_REG_POINT_INFO, &info, 1) == ESP_OK) {
-            uint8_t n = info & 0x0FU;
-            bool    ready = (info & 0x80U) && (n > 0);
+        esp_lcd_touch_read_data(tp);
+        uint8_t n = 0;
+        esp_lcd_touch_point_data_t points[GT911_MAX_CONTACTS];
+        esp_lcd_touch_get_data(tp, points, &n, GT911_MAX_CONTACTS);
 
-            if (ready) {
-                if (n > GT911_MAX_CONTACTS) n = GT911_MAX_CONTACTS;
-                if (n > CONFIG_ESP_LCD_TOUCH_MAX_POINTS)
-                    n = CONFIG_ESP_LCD_TOUCH_MAX_POINTS;
-
-                uint8_t buf[GT911_MAX_CONTACTS * 8];
-                if (gt911_read(dev, GT911_REG_POINT_1, buf, n * 8) == ESP_OK) {
-                    for (uint8_t i = 0; i < n; i++) {
-                        uint16_t x = buf[i * 8 + 1] | ((uint16_t)buf[i * 8 + 2] << 8);
-                        uint16_t y = buf[i * 8 + 3] | ((uint16_t)buf[i * 8 + 4] << 8);
-                        s_touch.x[i] = (x < LCD_H_RES) ? x : (LCD_H_RES - 1);
-                        s_touch.y[i] = (y < LCD_V_RES) ? y : (LCD_V_RES - 1);
-                    }
-                    s_touch.points = n;
-                } else {
-                    s_touch.points = 0;
-                }
-            } else {
-                s_touch.points = 0;
+        if (n > 0) {
+            for (uint8_t i = 0; i < n; i++) {
+                s_touch.x[i] = (points[i].x < LCD_H_RES) ? points[i].x : (LCD_H_RES - 1);
+                s_touch.y[i] = (points[i].y < LCD_V_RES) ? points[i].y : (LCD_V_RES - 1);
             }
-            gt911_write8(dev, GT911_REG_POINT_INFO, 0);
+            s_touch.points = n;
         } else {
             s_touch.points = 0;
         }
@@ -801,18 +751,20 @@ void app_main(void)
     i2c_master_bus_handle_t bus_handle = NULL;
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &bus_handle));
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = GT911_ADDR,
-        .scl_speed_hz    = TOUCH_I2C_SPEED_HZ,
-    };
-    i2c_master_dev_handle_t dev_handle = NULL;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
+    esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    io_config.scl_speed_hz = TOUCH_I2C_SPEED_HZ;
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(bus_handle, &io_config, &io_handle));
 
-    if (gt911_probe(dev_handle)) {
-        xTaskCreate(touch_task, "touch", 4096, dev_handle, 5, NULL);
-        ESP_LOGI(TAG, "Touch active");
-    } else {
-        ESP_LOGW(TAG, "GT911 not found — touch disabled");
-    }
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LCD_H_RES,
+        .y_max = LCD_V_RES,
+        .rst_gpio_num = -1,
+        .int_gpio_num = -1,
+    };
+    esp_lcd_touch_handle_t tp = NULL;
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(io_handle, &tp_cfg, &tp));
+
+    xTaskCreate(touch_task, "touch", 4096, tp, 5, NULL);
+    ESP_LOGI(TAG, "Touch active");
 }
