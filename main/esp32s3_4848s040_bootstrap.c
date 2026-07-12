@@ -5,7 +5,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "driver/i2c.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 
@@ -42,7 +41,6 @@
 
 #define LCD_PIN_BL      38
 
-#define TOUCH_I2C_PORT      I2C_NUM_0
 #define TOUCH_PIN_SDA       19
 #define TOUCH_PIN_SCL       45
 #define TOUCH_I2C_SPEED_HZ  100000
@@ -286,27 +284,27 @@ static const uint16_t s_touch_colors[GT911_MAX_CONTACTS] = {
  * GT911 touch driver (I²C)
  * ================================================================ */
 
-static esp_err_t gt911_read(uint16_t reg, uint8_t *data, size_t len)
+static esp_err_t gt911_read(i2c_master_dev_handle_t dev, uint16_t reg,
+                            uint8_t *data, size_t len)
 {
     uint8_t rb[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF)};
-    return i2c_master_write_read_device(TOUCH_I2C_PORT, GT911_ADDR,
-                                        rb, sizeof(rb), data, len,
-                                        pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
+    return i2c_master_transmit_receive(dev, rb, sizeof(rb), data, len,
+                                       TOUCH_I2C_TIMEOUT_MS);
 }
 
-static esp_err_t gt911_write8(uint16_t reg, uint8_t val)
+static esp_err_t gt911_write8(i2c_master_dev_handle_t dev, uint16_t reg,
+                              uint8_t val)
 {
     uint8_t buf[3] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF), val};
-    return i2c_master_write_to_device(TOUCH_I2C_PORT, GT911_ADDR,
-                                      buf, sizeof(buf),
-                                      pdMS_TO_TICKS(TOUCH_I2C_TIMEOUT_MS));
+    return i2c_master_transmit(dev, buf, sizeof(buf),
+                               TOUCH_I2C_TIMEOUT_MS);
 }
 
-static bool gt911_probe(void)
+static bool gt911_probe(i2c_master_dev_handle_t dev)
 {
     uint8_t pid[3] = {0}, cfg = 0;
-    if (gt911_read(GT911_REG_PRODUCT_ID, pid, sizeof(pid)) != ESP_OK) return false;
-    if (gt911_read(GT911_REG_CFG_VERSION, &cfg, 1) != ESP_OK)       return false;
+    if (gt911_read(dev, GT911_REG_PRODUCT_ID, pid, sizeof(pid)) != ESP_OK) return false;
+    if (gt911_read(dev, GT911_REG_CFG_VERSION, &cfg, 1) != ESP_OK)       return false;
 
     for (size_t i = 0; i < sizeof(pid); i++) {
         if (pid[i] != 0 && (pid[i] < '0' || pid[i] > '9')) return false;
@@ -319,10 +317,10 @@ static bool gt911_probe(void)
 
 static void touch_task(void *arg)
 {
-    (void)arg;
+    i2c_master_dev_handle_t dev = (i2c_master_dev_handle_t)arg;
     while (1) {
         uint8_t info = 0;
-        if (gt911_read(GT911_REG_POINT_INFO, &info, 1) == ESP_OK) {
+        if (gt911_read(dev, GT911_REG_POINT_INFO, &info, 1) == ESP_OK) {
             uint8_t n = info & 0x0FU;
             bool    ready = (info & 0x80U) && (n > 0);
 
@@ -332,7 +330,7 @@ static void touch_task(void *arg)
                     n = CONFIG_ESP_LCD_TOUCH_MAX_POINTS;
 
                 uint8_t buf[GT911_MAX_CONTACTS * 8];
-                if (gt911_read(GT911_REG_POINT_1, buf, n * 8) == ESP_OK) {
+                if (gt911_read(dev, GT911_REG_POINT_1, buf, n * 8) == ESP_OK) {
                     for (uint8_t i = 0; i < n; i++) {
                         uint16_t x = buf[i * 8 + 1] | ((uint16_t)buf[i * 8 + 2] << 8);
                         uint16_t y = buf[i * 8 + 3] | ((uint16_t)buf[i * 8 + 4] << 8);
@@ -346,7 +344,7 @@ static void touch_task(void *arg)
             } else {
                 s_touch.points = 0;
             }
-            gt911_write8(GT911_REG_POINT_INFO, 0);
+            gt911_write8(dev, GT911_REG_POINT_INFO, 0);
         } else {
             s_touch.points = 0;
         }
@@ -792,19 +790,27 @@ void app_main(void)
 #endif
 
     /* --- touch --- */
-    const i2c_config_t i2c_cfg = {
-        .mode          = I2C_MODE_MASTER,
-        .sda_io_num    = TOUCH_PIN_SDA,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num    = TOUCH_PIN_SCL,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master        = { .clk_speed = TOUCH_I2C_SPEED_HZ },
+    i2c_master_bus_config_t i2c_bus_cfg = {
+        .i2c_port     = -1,
+        .sda_io_num   = TOUCH_PIN_SDA,
+        .scl_io_num   = TOUCH_PIN_SCL,
+        .clk_source   = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    ESP_ERROR_CHECK(i2c_param_config(TOUCH_I2C_PORT, &i2c_cfg));
-    ESP_ERROR_CHECK(i2c_driver_install(TOUCH_I2C_PORT, i2c_cfg.mode, 0, 0, 0));
+    i2c_master_bus_handle_t bus_handle = NULL;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &bus_handle));
 
-    if (gt911_probe()) {
-        xTaskCreate(touch_task, "touch", 4096, NULL, 5, NULL);
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = GT911_ADDR,
+        .scl_speed_hz    = TOUCH_I2C_SPEED_HZ,
+    };
+    i2c_master_dev_handle_t dev_handle = NULL;
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
+
+    if (gt911_probe(dev_handle)) {
+        xTaskCreate(touch_task, "touch", 4096, dev_handle, 5, NULL);
         ESP_LOGI(TAG, "Touch active");
     } else {
         ESP_LOGW(TAG, "GT911 not found — touch disabled");
