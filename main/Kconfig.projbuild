@@ -33,9 +33,12 @@ menu "LCD Buffer Configuration"
         default n
         help
             DMA runs only during draw_bitmap/refresh calls, not continuously.
-            Eliminates tearing but requires calling esp_lcd_rgb_panel_refresh()
-            after every draw_bitmap.
 
-            WARNING: Known not to work with ST7701 on ESP-IDF v6.0.
-            Enable only if your panel supports PCLK gating.
+            WARNING: ST7701 GRAM retention on this board is effectively zero —
+            the panel fades within ~50 ms. Requires re-refreshing every frame
+            to avoid flicker, negating most benefits of on-demand mode.
+
+            Remaining value: clean vsync swaps in mode 3 (double-buffer)
+            at the cost of 2× PSRAM. Mode 6 achieves the same tear-free
+            result with zero framebuffer PSRAM.
 endmenu
