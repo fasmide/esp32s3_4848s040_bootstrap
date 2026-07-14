@@ -27,4 +27,15 @@ menu "LCD Buffer Configuration"
             through them at ~15 fps. Each frame change requires a full-frame
             DMA transfer (~35 ms), which may delay touch updates briefly.
             Mode 6 is unaffected (uses on-the-fly ISR rendering).
+
+    config LCD_REFRESH_ON_DEMAND
+        bool "Enable refresh-on-demand DMA (modes 2–5)"
+        default n
+        help
+            DMA runs only during draw_bitmap/refresh calls, not continuously.
+            Eliminates tearing but requires calling esp_lcd_rgb_panel_refresh()
+            after every draw_bitmap.
+
+            WARNING: Known not to work with ST7701 on ESP-IDF v6.0.
+            Enable only if your panel supports PCLK gating.
 endmenu

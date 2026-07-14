@@ -161,6 +161,10 @@ static esp_lcd_rgb_panel_config_t make_rgb_config(void)
     cfg.flags.no_fb = 1;
 #endif
 
+#if CONFIG_LCD_REFRESH_ON_DEMAND && !LCD_BUF_IS_ISR_DRIVEN
+    cfg.flags.refresh_on_demand = 1;
+#endif
+
     return cfg;
 }
 

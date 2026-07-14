@@ -11,6 +11,13 @@
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_lcd_panel_rgb.h"
+
+#if CONFIG_LCD_REFRESH_ON_DEMAND
+#define DISPLAY_REFRESH()  esp_lcd_rgb_panel_refresh(display_get_panel())
+#else
+#define DISPLAY_REFRESH()  ((void)0)
+#endif
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
 
@@ -211,6 +218,7 @@ static void restore_rect(int x0, int y0, int x1, int y1)
         memcpy(s_scratch + (y * w), src, w * LCD_BYTES_PER_PIXEL);
     }
     esp_lcd_panel_draw_bitmap(display_get_panel(), x0, y0, x0 + w, y0 + h, s_scratch);
+    DISPLAY_REFRESH();
 }
 
 static void move_touch_rect(int old_x, int old_y, int new_x, int new_y,
@@ -243,6 +251,7 @@ static void move_touch_rect(int old_x, int old_y, int new_x, int new_y,
     }
 
     esp_lcd_panel_draw_bitmap(display_get_panel(), x0, y0, x0 + w, y0 + h, s_scratch);
+    DISPLAY_REFRESH();
 }
 
 static void draw_touch_rect(int tx, int ty, uint16_t color)
@@ -255,6 +264,7 @@ static void draw_touch_rect(int tx, int ty, uint16_t color)
 
     for (int i = 0; i < w * h; i++) s_scratch[i] = color;
     esp_lcd_panel_draw_bitmap(display_get_panel(), bx0, by0, bx0 + w, by0 + h, s_scratch);
+    DISPLAY_REFRESH();
 }
 
 #endif /* !CONFIG_LCD_ANIMATION */
@@ -265,6 +275,7 @@ static void render_task(void *arg)
 
     esp_lcd_panel_draw_bitmap(display_get_panel(), 0, 0, LCD_H_RES, LCD_V_RES,
                               s_clean_bg);
+    DISPLAY_REFRESH();
     s_touch_prev.points = 0;
 
     while (1) {
@@ -312,6 +323,7 @@ static void render_task(void *arg)
             }
             esp_lcd_panel_draw_bitmap(display_get_panel(), 0, 0,
                                       LCD_H_RES, LCD_V_RES, s_clean_bg);
+            DISPLAY_REFRESH();
         }
 #else
         uint8_t max_pts = cur.points;
