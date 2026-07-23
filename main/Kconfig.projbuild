@@ -1,0 +1,44 @@
+menu "LCD Buffer Configuration"
+    choice LCD_BUF_MODE
+        prompt "RGB LCD Buffer Mode"
+        default LCD_BUF_MODE_PSRAM_FB
+        help
+            Select the frame buffer strategy used by the RGB LCD driver.
+            Mode 1 (internal SRAM) is not available — 460 KB doesn't fit.
+            See: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/lcd/rgb_lcd.html
+
+        config LCD_BUF_MODE_PSRAM_FB
+            bool "2 - Single FB in PSRAM"
+        config LCD_BUF_MODE_DOUBLE_PSRAM_FB
+            bool "3 - Double FB in PSRAM"
+        config LCD_BUF_MODE_USER_FB
+            bool "4 - User custom FB"
+        config LCD_BUF_MODE_BOUNCE_PSRAM_FB
+            bool "5 - Bounce buffer + PSRAM FB"
+        config LCD_BUF_MODE_BOUNCE_ONLY
+            bool "6 - Bounce buffer only (no framebuffer)"
+    endchoice
+
+    config LCD_ANIMATION
+        bool "Enable animated background (modes 2–5)"
+        default n
+        help
+            Pre-computes 6 animation keyframes (~2.7 MB PSRAM) and cycles
+            through them at ~15 fps. Each frame change requires a full-frame
+            DMA transfer (~35 ms), which may delay touch updates briefly.
+            Mode 6 is unaffected (uses on-the-fly ISR rendering).
+
+    config LCD_REFRESH_ON_DEMAND
+        bool "Enable refresh-on-demand DMA (modes 2–5)"
+        default n
+        help
+            DMA runs only during draw_bitmap/refresh calls, not continuously.
+
+            WARNING: ST7701 GRAM retention on this board is effectively zero —
+            the panel fades within ~50 ms. Requires re-refreshing every frame
+            to avoid flicker, negating most benefits of on-demand mode.
+
+            Remaining value: clean vsync swaps in mode 3 (double-buffer)
+            at the cost of 2× PSRAM. Mode 6 achieves the same tear-free
+            result with zero framebuffer PSRAM.
+endmenu
